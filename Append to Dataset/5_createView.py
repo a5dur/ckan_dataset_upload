@@ -1,75 +1,55 @@
 #!/usr/bin/env python3
-"""
-Simple CKAN Table View Creator
-Creates a table view for a resource in a CKAN dataset using the CKAN API.
-"""
+import requests, sys
+from config import CKAN_URL, CKAN_API_KEY, DATASET_ID, RESOURCE_NAME
 
-import requests
-import json
-import os
+def norm(x: str) -> str:
+    return (x or "").strip().lower().replace("_", " ")
 
+def get_res_id(s, dataset_id, resource_name):
+    r = s.get(f"{CKAN_URL}/api/3/action/package_show", params={"id": dataset_id}, timeout=30)
+    r.raise_for_status()
+    js = r.json()
+    if not js.get("success"):
+        return None
+    target = norm(resource_name)
+    # exact normalized match first
+    for res in js["result"].get("resources", []):
+        if norm(res.get("name", "")) == target:
+            return res["id"]
+    # fallback: prefix match after normalization
+    for res in js["result"].get("resources", []):
+        if norm(res.get("name", "")).startswith(target):
+            return res["id"]
+    return None
 
-def create_ckan_table_view(ckan_url, dataset_id, resource_name, api_key):
-    """
-    Create a table view for a resource in CKAN.
-    
-    Args:
-        ckan_url: Base URL of the CKAN instance (e.g., 'https://demo.ckan.org')
-        dataset_id: ID or name of the dataset
-        resource_name: Name of the resource
-        api_key: API key for authentication
-        
-    Returns:
-        Dictionary containing the created view information
-    """
-    headers = {
-        'Authorization': api_key,
-        'Content-Type': 'application/json'
+def main():
+    if not CKAN_API_KEY:
+        print("✗ Missing CKAN_API_KEY")
+        sys.exit(1)
+
+    s = requests.Session()
+    s.headers.update({"Authorization": CKAN_API_KEY})
+
+    res_id = get_res_id(s, DATASET_ID, RESOURCE_NAME)
+    if not res_id:
+        print("✗ Resource not found")
+        sys.exit(1)
+
+    # Create DataTables view
+    view_url = f"{CKAN_URL}/api/3/action/resource_view_create"
+    data = {
+        "resource_id": res_id,
+        "title": f"{RESOURCE_NAME} Data Table",
+        "view_type": "datatables_view"
     }
-    
-    # Get dataset to find resource ID
-    dataset_url = f"{ckan_url.rstrip('/')}/api/3/action/package_show"
-    dataset_response = requests.post(dataset_url, json={'id': dataset_id}, headers=headers)
-    dataset_data = dataset_response.json()
-    
-    # Find resource ID by name
-    resource_id = None
-    for resource in dataset_data['result']['resources']:
-        if resource['name'].lower() == resource_name.lower():
-            resource_id = resource['id']
-            break
-    
-    if not resource_id:
-        raise Exception(f"Resource '{resource_name}' not found in dataset")
-    
-    # Create table view
-    view_url = f"{ckan_url.rstrip('/')}/api/3/action/resource_view_create"
-    view_data = {
-        'resource_id': resource_id,
-        'title': 'Data Table View',
-        'view_type': 'datatables_view',
-        'description': 'Interactive table view of the resource data'
-    }
-    
-    view_response = requests.post(view_url, json=view_data, headers=headers)
-    view_result = view_response.json()
-    
-    if view_result['success']:
-        return view_result['result']
+    r = s.post(view_url, json=data, timeout=60)
+    if r.status_code == 200 and r.json().get("success"):
+        print(f"✓ View created for {RESOURCE_NAME}")
     else:
-        raise Exception(f"Failed to create view: {view_result['error']}")
+        print(f"✗ View creation failed: HTTP {r.status_code}")
+        print(r.text)
+        sys.exit(1)
 
-
-# Example usage:
 if __name__ == "__main__":
-    # Set your parameters here
-    CKAN_URL = "https://catalog.civicdataecosystem.org"
-    DATASET_ID = "ckan-extensions-metadata"
-    RESOURCE_NAME = "CKAN Extensions Dynamic Metadata"
-    API_KEY = os.getenv('CKAN_API_KEY')
-    
-    try:
-        view = create_ckan_table_view(CKAN_URL, DATASET_ID, RESOURCE_NAME, API_KEY)
-        print(f"Successfully created view with ID: {view['id']}")
-    except Exception as e:
-        print(f"Error: {e}")
+    main()
+
